@@ -109,6 +109,29 @@ def build_few_shot_prompt(system_prompt, examples, user_input):
     parts.append(f"Input: {user_input.strip()}")
     return "\n".join(parts)
 
+def select_dynamic_examples(command, examples, k=5):
+    """
+    Select k examples closest to the input command using simple token overlap.
+    Fast, no embeddings, perfect for SSH commands.
+    """
+    command_tokens = set(command.lower().split())
+    scored = []
+
+    for ex in examples:
+        ex_cmd = ex.get("command", "").lower()
+        ex_tokens = set(ex_cmd.split())
+
+
+        score = len(command_tokens & ex_tokens)
+        if score > 0:
+            scored.append((score, ex))
+
+    
+    scored.sort(key=lambda x: x[0], reverse=True)
+
+    return [ex for _, ex in scored[:k]]
+
+
 # =============================
 #           LLM Class
 # =============================
@@ -170,7 +193,17 @@ class LLM:
             return "Connection timed out"
 
         # 3. Construct Payload
-        prompt_content = build_few_shot_prompt(self.system_prompt, self.examples, query)
+        # Dynamic Few-Shot Selection
+        dynamic_examples = select_dynamic_examples (
+            query,
+            self.examples,
+            k=5
+        )
+        prompt_content = build_few_shot_prompt (
+            self.system_prompt,
+            dynamic_examples,
+            query
+        )
         messages = [{"role": "user" if i % 2 == 0 else "assistant", "content": m} for i, m in enumerate(log_history)]
         messages.append({"role": "user", "content": prompt_content})
 

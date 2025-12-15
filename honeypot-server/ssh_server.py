@@ -117,7 +117,7 @@ def handle_connection(client_sock, llm_instance):
             char = byte.decode("utf-8", errors="ignore")
 
             # ENTER PRESSED
-            if char == "\r":
+            if char in ("\r","\n"):
                 chan.send("\r\n")
                 cmd = buff.strip()
 
@@ -148,6 +148,8 @@ def handle_connection(client_sock, llm_instance):
 
                 buff = ""
                 chan.send(prompt)
+                #ignore second char if it's \n after \r
+                continue
 
             # BACKSPACE HANDLING
             elif char in ("\x7f", "\x08"):
@@ -155,10 +157,10 @@ def handle_connection(client_sock, llm_instance):
                     buff = buff[:-1]
                     chan.send("\x08 \x08")
 
-            # NORMAL TYPING
+            # NORMAL TYPING (No Echo)
             else:
                 buff += char
-                chan.send(char)
+                
 
     except Exception as e:
         logger.error(f"Connection Error: {e}")
