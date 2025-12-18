@@ -178,19 +178,20 @@ class LLM:
         return text.strip()
 
     async def answer(self, query, log_history=None):
-        if log_history is None: log_history = []
+        if log_history is None: 
+            log_history = []
         
         # 1. Cache Check
         cache_key = f"{query}::{len(log_history)}"
         cached_resp = self.cache.get(cache_key)
         if cached_resp:
-            logger.info(f"Cache Hit for: {query[:10]}...")
             return cached_resp
 
         # 2. Circuit Breaker Check
         if not self.circuit.allow_request():
-            logger.warning("Request blocked by Circuit Breaker.")
-            return "Connection timed out"
+            logger.warning("Circuit breaker OPEN → degraded AI response")
+            return await self._degraded_ai_response(query)
+            
 
         # 3. Construct Payload
         # Dynamic Few-Shot Selection
@@ -204,8 +205,8 @@ class LLM:
             dynamic_examples,
             query
         )
-        messages = [{"role": "user" if i % 2 == 0 else "assistant", "content": m} for i, m in enumerate(log_history)]
-        messages.append({"role": "user", "content": prompt_content})
+        messages = [{"role": "user", "content": prompt_content}]
+        
 
         # 4. Execute with Retries
         for attempt in range(1, self.max_retries + 1):
@@ -213,12 +214,16 @@ class LLM:
                 completion = await self.client.chat.completions.create(
                     model=self.api_model,
                     messages=messages,
-                    max_tokens=1024,
+                    max_tokens=512,
                     temperature=0.0, # Low temp for consistent terminal output
                 )
                 
                 raw_text = completion.choices[0].message.content
                 clean_text = self._sanitize(raw_text)
+                
+                # SSH safety: never return empty output
+                if not clean_text.strip():
+                    clean_text = "\n"
                 
                 # Success: Update State
                 self.circuit.record_success()
@@ -229,7 +234,31 @@ class LLM:
             except Exception as e:
                 logger.error(f"Attempt {attempt} failed: {e}")
                 self.circuit.record_failure()
-                if attempt < self.max_retries:
-                    await asyncio.sleep(0.5 * attempt) # Exponential backoff
+                await asyncio.sleep(0.5 * attempt) # Exponential backoff
 
-        return "Internal Server Error"
+        return await self._degraded_ai_response(query)
+    async def _degraded_ai_response(self, query: str) -> str:
+        try:
+            messages = [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a Linux shell in a degraded state."
+                        "Some services are unavailable."
+                        "Respond briefly like a real Linux server."
+                    )
+                },
+                {"role": "user", "content": query}
+            ]
+            completion = await self.client.chat.completions.create(
+                model=self.api_model,
+                messages=messages,
+                max_tokens=64,
+                temperature=0.2
+            )
+            text = self._sanitize(completion.choices[0].message.content)
+            return text if text.strip() else "\n"
+        
+        except Exception as e:
+            logger.error(f"Degraded AI failed: {e}")
+            return "\n"
